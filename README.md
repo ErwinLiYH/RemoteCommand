@@ -1,327 +1,211 @@
-# RemoteCommand Server
+# RemoteCommand
 
-RemoteCommand Server 是一个独立的 HTTP 命令执行服务。调用方通过 HTTP
-提交命令，命令在服务器本机运行，stdout、stderr 和退出状态通过 NDJSON
-实时返回。
+RemoteCommand is a lightweight server for running commands on a remote machine
+over HTTP.
 
-## 特性
+Commands run locally on the RemoteCommand server. Their output is streamed back
+to the client in real time, and continues to be recorded if the client
+disconnects. You can reconnect later, recover the output produced while you
+were away, and continue following the command until it exits.
 
-- 启动时设置默认工作目录，单条命令可以覆盖
-- stdout 和 stderr 实时分流，不要求输出以换行结尾
-- 可选 PTY，支持依赖终端的颜色、进度条和 `\r` 刷新
-- HTTP 连接断开后命令继续运行
-- 输出写入磁盘，可使用事件序号断点重连
-- 查询、取消命令，并终止完整的 POSIX 进程组
-- Bearer Token 认证
-- 同步 Python 客户端
+## Highlights
 
-目前支持 Linux 和 macOS，不支持 Windows。
+- Run commands remotely through an authenticated HTTP connection
+- Stream stdout and stderr in real time
+- Keep commands running when the client disconnects
+- Reconnect to a command and recover missed output
+- Set a default server working directory or override it per command
+- Optional PTY mode for terminal-aware programs, colors, and progress bars
+- List running and completed commands from the CLI
+- Persist command state and output on disk
+- Clean completed command history when it is no longer needed
 
-## 安装
+RemoteCommand currently supports Linux and macOS with Python 3.10 or newer.
 
-使用 uv：
+## Installation
+
+Clone the repository and install it with pip:
 
 ```bash
-uv sync
-```
+git clone https://github.com/ErwinLiYH/RemoteCommand.git
+cd RemoteCommand
 
-或者安装为普通 Python 包：
-
-```bash
 python -m pip install .
 ```
 
-## 启动
+For development, install the package in editable mode:
 
-Token 相当于这个服务的访问密码。由于 API 可以执行任意命令，服务拒绝在
-没有 Token 的情况下启动。
+```bash
+python -m pip install -e ".[test]"
+```
+
+The installation provides two commands:
+
+```text
+remote-command-server   Start the HTTP server
+remote-command          Run and manage remote commands
+```
+
+## Start the Server
+
+RemoteCommand requires a Bearer Token because clients can execute arbitrary
+commands on the server.
 
 ```bash
 export REMOTE_COMMAND_TOKEN="replace-with-a-long-random-token"
 
-uv run remote-command-server \
-  --host 127.0.0.1 \
+remote-command-server \
+  --host 0.0.0.0 \
   --port 8000 \
   --working-directory /path/to/default/workspace
 ```
 
-也可以从文件读取 Token，避免它出现在 shell 环境中：
+`--working-directory` is the default directory used by commands. Individual
+commands can override it.
+
+By default, command metadata and output are stored in
+`~/.remote-command`. Completed command history is retained for seven days
+unless it is cleaned manually or the retention setting is changed.
+
+For local-only testing, bind the server to `127.0.0.1` instead:
 
 ```bash
-uv run remote-command-server \
-  --token-file /secure/path/remote-command.token \
-  --working-directory /path/to/default/workspace
+remote-command-server \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --working-directory "$(pwd)"
 ```
 
-默认状态目录是 `~/.remote-command`，其中保存命令元数据和 NDJSON
-事件日志。完成命令默认保留 168 小时。
+## Configure the CLI
 
-查看所有启动参数：
+Set the server URL and use the same Token configured on the server:
 
 ```bash
-uv run remote-command-server --help
-```
-
-## 运行命令
-
-`curl` 必须使用 `-N` 禁用客户端缓冲：
-
-```bash
-curl -N http://127.0.0.1:8000/commands \
-  -H "Authorization: Bearer replace-with-a-long-random-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "command": "printf \"starting\\n\"; sleep 1; printf \"done\\n\""
-  }'
-```
-
-单次覆盖工作目录：
-
-```bash
-curl -N http://127.0.0.1:8000/commands \
-  -H "Authorization: Bearer replace-with-a-long-random-token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "command": "pwd && ls",
-    "working_directory": "/tmp",
-    "command_id": "list-tmp"
-  }'
-```
-
-相对工作目录基于服务启动时的默认工作目录解析，绝对路径则直接使用。
-
-## NDJSON 事件
-
-响应的每一行都是一个完整 JSON 对象：
-
-```json
-{"command_id":"example","seq":1,"type":"started","timestamp":"2026-06-13T12:00:00Z","status":"running","pid":1234}
-{"command_id":"example","seq":2,"type":"stdout","timestamp":"2026-06-13T12:00:00Z","data":"hello\n"}
-{"command_id":"example","seq":3,"type":"exit","timestamp":"2026-06-13T12:00:01Z","status":"exited","return_code":0}
-```
-
-普通模式使用 `stdout` 和 `stderr` 事件。事件中的 `data` 可以包含换行或
-回车字符，不会因为程序没有输出换行而延迟。
-
-长时间没有输出时，连接会收到不写盘的 `heartbeat` 事件，避免代理关闭
-空闲连接。
-
-## PTY
-
-某些程序检测到 stdout 不是终端后会缓冲输出、关闭颜色或隐藏进度条。
-为这类命令设置 `"pty": true`：
-
-```bash
-curl -N http://127.0.0.1:8000/commands \
-  -H "Authorization: Bearer replace-with-a-long-random-token" \
-  -H "Content-Type: application/json" \
-  -d '{"command":"your-progress-command","pty":true}'
-```
-
-PTY 模式的 stdout 和 stderr 会合并为 `output` 事件。本项目目前只提供
-输出流，不支持向运行中的 PTY 发送 stdin。
-
-## 断点重连
-
-首次响应头 `X-Command-ID` 和 `started` 事件都包含命令 ID。假设最后收到
-的事件序号为 12：
-
-```bash
-curl -N \
-  "http://127.0.0.1:8000/commands/example/events?after_seq=12&follow=true" \
-  -H "Authorization: Bearer replace-with-a-long-random-token"
-```
-
-服务器先返回序号大于 12 的历史事件，然后继续跟随实时输出。设置
-`follow=false` 只读取已有事件。
-
-## 其他 API
-
-```text
-GET    /healthz                       健康检查，无需 Token
-POST   /commands                      运行命令并返回事件流
-GET    /commands                      列出命令
-POST   /cleanup                       清理全部已结束命令及事件日志
-GET    /commands/{command_id}         查询命令状态
-GET    /commands/{command_id}/events  重放并跟随事件
-DELETE /commands/{command_id}         取消命令
-```
-
-交互式 API 文档位于 `/docs`。
-
-## Python 客户端
-
-### 简单命令行脚本
-
-先设置连接地址和 Token：
-
-```bash
-export REMOTE_COMMAND_URL="http://127.0.0.1:8000"
+export REMOTE_COMMAND_URL="http://192.168.1.20:8000"
 export REMOTE_COMMAND_TOKEN="replace-with-a-long-random-token"
 ```
 
-然后直接运行命令：
-
-```bash
-python remote_command.py --command "ls -la"
-```
-
-客户端会直接显示普通终端输出，不显示底层 JSON。它还会在 stderr 中显示
-`command_id`、PID 和退出状态，并使用远端命令的退出码作为自己的退出码。
-
-指定工作目录、命令 ID 或 PTY：
-
-```bash
-python remote_command.py \
-  --command "python train.py" \
-  --working-directory /path/to/project \
-  --command-id training-1 \
-  --pty
-```
-
-重新连接某个命令并从头显示已有输出，然后继续实时跟随：
-
-```bash
-python remote_command.py --reconnect training-1
-```
-
-如果已经处理到事件序号 120，只读取之后的输出：
-
-```bash
-python remote_command.py --reconnect training-1 --after-seq 120
-```
-
-只打印当前已有输出，不继续等待：
-
-```bash
-python remote_command.py --reconnect training-1 --no-follow
-```
-
-按 `Ctrl-C` 只会断开客户端，服务器上的命令会继续运行，客户端会打印一条
-带有最后事件序号的重连命令。加 `--quiet` 可以隐藏客户端自己的状态信息。
-
-安装项目后，也可以使用更短的等价命令：
-
-```bash
-remote-command --command "ls -la"
-remote-command --reconnect training-1
-```
-
-CLI 覆盖服务端的全部 API：
-
-```bash
-# 健康检查，不需要 Token
-remote-command --health
-
-# 查看全部保留中的命令
-remote-command --list
-
-# 只查看正在运行的命令
-remote-command --list --status running
-
-# 查看单条命令的完整状态
-remote-command --get training-1
-
-# 终止命令及其整个子进程组
-remote-command --cancel training-1
-
-# 删除所有已结束命令的状态和事件日志
-remote-command --cleanup
-```
-
-查询操作默认输出易读的摘要或表格。加 `--json` 可以获得适合脚本处理的
-JSON：
-
-```bash
-remote-command --list --status running --json
-remote-command --get training-1 --json
-remote-command --health --json
-remote-command --cleanup --json
-```
-
-运行或重连时使用 `--json`，会逐行输出原始 NDJSON 事件：
-
-```bash
-remote-command --reconnect training-1 --after-seq 120 --json
-```
-
-运行 `python remote_command.py --help` 可以查看全部参数。`--url` 和
-`--token` 参数可以覆盖对应环境变量。
-
-### 指定服务器 IP 和端口
-
-单次指定完整 URL：
+You can also provide them for a single command:
 
 ```bash
 remote-command \
   --url http://192.168.1.20:8000 \
-  --token your-secret-token \
+  --token replace-with-a-long-random-token \
   --list
 ```
 
-或者设置环境变量，之后无需重复传参：
+## Run a Command
 
 ```bash
-export REMOTE_COMMAND_URL="http://192.168.1.20:8000"
-export REMOTE_COMMAND_TOKEN="your-secret-token"
+remote-command --command "pwd && ls -la"
+```
 
+Output is displayed as ordinary terminal output as soon as it is produced.
+The CLI also prints the generated command ID, process ID, status, and return
+code.
+
+Assign a memorable command ID and override the working directory:
+
+```bash
+remote-command \
+  --command "python train.py" \
+  --command-id training-1 \
+  --working-directory /path/to/project
+```
+
+If no command ID is provided, the server generates one automatically.
+
+Use PTY mode when a program buffers output or expects a terminal:
+
+```bash
+remote-command \
+  --command "python train.py" \
+  --command-id training-1 \
+  --pty
+```
+
+## Reconnect and Recover Output
+
+Pressing `Ctrl-C` disconnects the client but does not stop the remote command.
+The CLI prints a reconnect command containing the last received event
+sequence.
+
+Reconnect from the beginning of the saved output:
+
+```bash
+remote-command --reconnect training-1
+```
+
+Reconnect after the last event you received:
+
+```bash
+remote-command \
+  --reconnect training-1 \
+  --after-seq 120
+```
+
+The server first sends all output produced after event 120, including output
+generated while the client was disconnected, and then continues streaming new
+output in real time.
+
+To replay currently saved output without waiting for future output:
+
+```bash
+remote-command --reconnect training-1 --no-follow
+```
+
+## List Commands
+
+List all retained commands:
+
+```bash
 remote-command --list
-remote-command --command "pwd"
 ```
 
-如果需要从其他机器访问，服务端也必须监听可访问地址，例如
-`remote-command-server --host 0.0.0.0 --port 8000 ...`，并通过防火墙限制
-允许访问的来源。
-
-### Python API
-
-```python
-from remote_command_server import RemoteCommandClient
-
-with RemoteCommandClient(
-    "http://127.0.0.1:8000",
-    token="replace-with-a-long-random-token",
-) as client:
-    last_seq = 0
-    command_id = None
-
-    for event in client.run_command("echo hello && sleep 1 && echo done"):
-        if event["type"] == "started":
-            command_id = event["command_id"]
-        if event["type"] in {"stdout", "stderr", "output"}:
-            print(event["data"], end="", flush=True)
-        last_seq = max(last_seq, event["seq"])
-
-    # 连接中断时，可以使用保存的 command_id 和 last_seq 继续读取。
-    if command_id:
-        for event in client.events(command_id, after_seq=last_seq):
-            print(event)
-```
-
-## 反向代理
-
-远程访问时建议让服务仅监听内网或回环地址，并在前面配置 HTTPS 反向代理。
-代理必须关闭响应缓冲。例如 Nginx location：
-
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:8000;
-    proxy_http_version 1.1;
-    proxy_buffering off;
-    proxy_cache off;
-    proxy_read_timeout 24h;
-}
-```
-
-不要通过未加密的公网 HTTP 发送 Token。
-
-## 开发
+List only commands that are still running:
 
 ```bash
-uv sync --extra test
-uv run pytest
+remote-command --list --status running
 ```
 
-## 许可
+Inspect one command:
+
+```bash
+remote-command --get training-1
+```
+
+Stop a running command and its child processes:
+
+```bash
+remote-command --cancel training-1
+```
+
+Add `--json` to list or inspect commands in a machine-readable format:
+
+```bash
+remote-command --list --json
+remote-command --get training-1 --json
+```
+
+## Clean Completed Commands
+
+Delete the state and saved output of all completed, failed, cancelled, or lost
+commands:
+
+```bash
+remote-command --cleanup
+```
+
+Running commands are never removed by cleanup. After a command is cleaned, its
+saved output can no longer be replayed.
+
+## Security
+
+RemoteCommand can execute arbitrary shell commands. Use a strong Token, limit
+network access with a firewall, and use HTTPS through a reverse proxy when the
+server is exposed outside a trusted network. Do not send the Token over
+unencrypted public HTTP.
+
+## License
 
 MIT
