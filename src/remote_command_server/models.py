@@ -74,3 +74,7 @@ class CommandEvent(BaseModel):
 class CommandListResponse(BaseModel):
     commands: list[CommandRecord]
 
+
+class CleanupResponse(BaseModel):
+    cleaned_commands: list[str]
+    count: int

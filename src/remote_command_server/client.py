@@ -77,6 +77,11 @@ class RemoteCommandClient:
         response.raise_for_status()
         return response.json()["commands"]
 
+    def cleanup_commands(self) -> dict[str, Any]:
+        response = self._client.post("/cleanup")
+        response.raise_for_status()
+        return response.json()
+
     def cancel_command(self, command_id: str) -> dict[str, Any]:
         response = self._client.delete(f"/commands/{command_id}")
         response.raise_for_status()

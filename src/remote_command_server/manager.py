@@ -16,7 +16,7 @@ import struct
 import termios
 import uuid
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import AsyncIterator, TextIO
 
@@ -249,14 +249,32 @@ class CommandManager:
             cutoff = utc_now() - timedelta(
                 seconds=self.settings.retention_seconds
             )
+        return await self._cleanup_terminal_commands(cutoff=cutoff)
 
+    async def cleanup_completed(self) -> list[str]:
+        pending_finalization = [
+            runtime.done.wait()
+            for command_id, runtime in self._runtimes.items()
+            if self._records[command_id].status in TERMINAL_STATUSES
+            and not runtime.done.is_set()
+        ]
+        if pending_finalization:
+            await asyncio.gather(*pending_finalization)
+        return await self._cleanup_terminal_commands(cutoff=None)
+
+    async def _cleanup_terminal_commands(
+        self, *, cutoff: datetime | None
+    ) -> list[str]:
         removed: list[str] = []
         async with self._lock:
             for command_id, record in list(self._records.items()):
                 if record.status not in TERMINAL_STATUSES:
                     continue
+                runtime = self._runtimes.get(command_id)
+                if runtime is not None and not runtime.done.is_set():
+                    continue
                 finished_at = record.finished_at or record.created_at
-                if finished_at > cutoff:
+                if cutoff is not None and finished_at > cutoff:
                     continue
                 self._records.pop(command_id, None)
                 self._runtimes.pop(command_id, None)

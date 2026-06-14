@@ -118,6 +118,12 @@ class FakeClient:
             "return_code": -15,
         }
 
+    def cleanup_commands(self):
+        return {
+            "cleaned_commands": ["finished-task", "cancelled-task"],
+            "count": 2,
+        }
+
     def close(self) -> None:
         self.closed = True
 
@@ -242,6 +248,20 @@ def test_health_does_not_require_token(
     assert "status: ok" in captured.out
     assert "working_directory: /srv/workspace" in captured.out
     assert FakeClient.instances[0].token is None
+
+
+def test_cleanup_commands(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = client_cli.main(["--token", "secret", "--cleanup"])
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert captured.out == (
+        "cleaned: 2\n"
+        "- finished-task\n"
+        "- cancelled-task\n"
+    )
 
 
 def test_stream_json_outputs_one_event_per_line(

@@ -124,3 +124,35 @@ async def test_rejects_invalid_working_directory_and_duplicate_id(
                 json={"command": "true", "command_id": "duplicate"},
             )
             assert duplicate.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_cleanup_removes_completed_commands(tmp_path: Path) -> None:
+    app = make_app(tmp_path)
+    headers = {"Authorization": "Bearer secret"}
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            completed = await client.post(
+                "/commands",
+                headers=headers,
+                json={"command": "true", "command_id": "completed"},
+            )
+            assert completed.status_code == 200
+
+            cleanup = await client.post("/cleanup", headers=headers)
+            assert cleanup.status_code == 200
+            assert cleanup.json() == {
+                "cleaned_commands": ["completed"],
+                "count": 1,
+            }
+
+            missing = await client.get(
+                "/commands/completed", headers=headers
+            )
+            assert missing.status_code == 404
+
+            unauthorized = await client.post("/cleanup")
+            assert unauthorized.status_code == 401

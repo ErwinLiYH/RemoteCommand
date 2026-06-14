@@ -15,6 +15,7 @@ from remote_command_server.manager import (
     InvalidWorkingDirectoryError,
 )
 from remote_command_server.models import (
+    CleanupResponse,
     CommandListResponse,
     CommandRecord,
     RunCommandRequest,
@@ -115,6 +116,18 @@ def create_app(settings: Settings) -> FastAPI:
     )
     async def list_commands() -> CommandListResponse:
         return CommandListResponse(commands=manager.list_commands())
+
+    @app.post(
+        "/cleanup",
+        response_model=CleanupResponse,
+        dependencies=protected,
+    )
+    async def cleanup_commands() -> CleanupResponse:
+        cleaned_commands = await manager.cleanup_completed()
+        return CleanupResponse(
+            cleaned_commands=cleaned_commands,
+            count=len(cleaned_commands),
+        )
 
     @app.get(
         "/commands/{command_id}",

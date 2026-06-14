@@ -54,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Cancel a running command",
     )
     action.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Delete all completed command records and event logs",
+    )
+    action.add_argument(
         "--health",
         action="store_true",
         help="Check server health; a token is not required",
@@ -132,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
             return _show_command(client, args.get, as_json=args.json)
         if args.cancel:
             return _cancel_command(client, args.cancel, as_json=args.json)
+        if args.cleanup:
+            return _cleanup_commands(client, as_json=args.json)
         return _stream_command(client, args)
     except (httpx.HTTPError, ValueError) as exc:
         print(f"[remote-command] request failed: {exc}", file=sys.stderr)
@@ -316,6 +323,20 @@ def _cancel_command(
             f"status={command.get('status', 'unknown')} "
             f"return_code={_display_value(command.get('return_code'))}"
         )
+    return 0
+
+
+def _cleanup_commands(
+    client: RemoteCommandClient, *, as_json: bool
+) -> int:
+    result = client.cleanup_commands()
+    if as_json:
+        _print_json(result)
+    else:
+        cleaned_commands = result.get("cleaned_commands", [])
+        print(f"cleaned: {result.get('count', len(cleaned_commands))}")
+        for command_id in cleaned_commands:
+            print(f"- {command_id}")
     return 0
 
 

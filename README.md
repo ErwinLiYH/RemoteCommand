@@ -141,6 +141,7 @@ curl -N \
 GET    /healthz                       健康检查，无需 Token
 POST   /commands                      运行命令并返回事件流
 GET    /commands                      列出命令
+POST   /cleanup                       清理全部已结束命令及事件日志
 GET    /commands/{command_id}         查询命令状态
 GET    /commands/{command_id}/events  重放并跟随事件
 DELETE /commands/{command_id}         取消命令
@@ -223,6 +224,9 @@ remote-command --get training-1
 
 # 终止命令及其整个子进程组
 remote-command --cancel training-1
+
+# 删除所有已结束命令的状态和事件日志
+remote-command --cleanup
 ```
 
 查询操作默认输出易读的摘要或表格。加 `--json` 可以获得适合脚本处理的
@@ -232,6 +236,7 @@ JSON：
 remote-command --list --status running --json
 remote-command --get training-1 --json
 remote-command --health --json
+remote-command --cleanup --json
 ```
 
 运行或重连时使用 `--json`，会逐行输出原始 NDJSON 事件：
@@ -242,6 +247,31 @@ remote-command --reconnect training-1 --after-seq 120 --json
 
 运行 `python remote_command.py --help` 可以查看全部参数。`--url` 和
 `--token` 参数可以覆盖对应环境变量。
+
+### 指定服务器 IP 和端口
+
+单次指定完整 URL：
+
+```bash
+remote-command \
+  --url http://192.168.1.20:8000 \
+  --token your-secret-token \
+  --list
+```
+
+或者设置环境变量，之后无需重复传参：
+
+```bash
+export REMOTE_COMMAND_URL="http://192.168.1.20:8000"
+export REMOTE_COMMAND_TOKEN="your-secret-token"
+
+remote-command --list
+remote-command --command "pwd"
+```
+
+如果需要从其他机器访问，服务端也必须监听可访问地址，例如
+`remote-command-server --host 0.0.0.0 --port 8000 ...`，并通过防火墙限制
+允许访问的来源。
 
 ### Python API
 
